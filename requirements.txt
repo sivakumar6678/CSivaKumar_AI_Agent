@@ -1,0 +1,7 @@
+streamlit
+google-generativeai
+requests
+python-dotenv
+pandas
+# optional
+newspaper3k
