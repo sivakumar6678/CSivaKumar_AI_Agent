@@ -1,4 +1,4 @@
-# app.py (Enhanced UI/UX and functionality)
+# app.py (Enhanced UI/UX with async summarization)
 import os
 import time
 import requests
@@ -10,6 +10,9 @@ import google.generativeai as genai
 from serpapi import GoogleSearch
 from datetime import datetime, timedelta, date
 from urllib.parse import urlparse
+import concurrent.futures
+import uuid
+
 
 # -------------------- Load env vars & Model --------------------
 load_dotenv()
@@ -37,7 +40,6 @@ def parse_date_safe(value: str | None) -> str:
         except Exception:
             continue
     try:
-        # Some providers return natural dates like "3 hours ago"; keep as-is
         if value.isnumeric():
             ts = datetime.fromtimestamp(int(value))
             return ts.strftime("%Y-%m-%d %H:%M")
@@ -84,7 +86,7 @@ def chunk_text(text: str, max_chars: int = 3000) -> List[str]:
     return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
 
 
-def summarize_article_content(content: str, title: str = "",style_choice: str = "Professional", temperature: float = 0.2) -> Tuple[str, str]:
+def summarize_article_content(content: str, title: str = "", style_choice: str = "Professional", temperature: float = 0.2) -> Tuple[str, str]:
     """
     Returns (summary, key_points_md)
     """
@@ -94,9 +96,9 @@ def summarize_article_content(content: str, title: str = "",style_choice: str = 
     summaries = []
     for i, c in enumerate(chunks):
         prompt = (
-        f"You are a news summarizer. Style: {style_choice}.\n"
-        f"{summary_styles[style_choice]}\n\n"
-        f"TITLE: {title}\n\nCONTENT:\n{content[:4000]}"
+            f"You are a news summarizer. Style: {style_choice}.\n"
+            f"{summary_styles[style_choice]}\n\n"
+            f"TITLE: {title}\n\nCONTENT:\n{content[:4000]}"
         )
         s = summarize_with_gemini(prompt, max_output_tokens=220, temperature=temperature)
         summaries.append(s)
@@ -106,12 +108,11 @@ def summarize_article_content(content: str, title: str = "",style_choice: str = 
         main_summary = summaries[0]
     else:
         combined_prompt = (
-            "Combine these into one concise 2–3 sentence summary, factual, neutral tone.\n\n"
+            "Combine these into one concise 4–8 sentence summary, factual, neutral tone.\n\n"
             + "\n\n".join(summaries)
         )
         main_summary = summarize_with_gemini(combined_prompt, max_output_tokens=220, temperature=temperature)
 
-    
     kp_prompt = (
         f"Extract 3–5 key bullet points highlighting the most important facts from this article. "
         f"Keep it neutral and factual.\n\nTITLE: {title}\n\nCONTENT:\n{content[:3500]}"
@@ -124,24 +125,9 @@ def summarize_article_content(content: str, title: str = "",style_choice: str = 
 @st.cache_data(ttl=300)
 def fetch_newsapi(topic: str, num_articles: int, from_date: date | None, to_date: date | None) -> List[Dict]:
     if not NEWSAPI_KEY:
-        # Demo articles if no key
         return [
-            {
-                "title": f"Sample: {topic} News 1",
-                "content": f"Demo content for {topic} article 1",
-                "url": "https://example.com/1",
-                "image": None,
-                "source": "NewsAPI (Demo)",
-                "publishedAt": "2024-01-15T10:00:00Z",
-            },
-            {
-                "title": f"Sample: {topic} News 2",
-                "content": f"Demo content for {topic} article 2",
-                "url": "https://example.com/2",
-                "image": None,
-                "source": "NewsAPI (Demo)",
-                "publishedAt": "2024-01-15T09:00:00Z",
-            },
+            {"title": f"Sample: {topic} News 1", "content": f"Demo content for {topic} article 1", "url": "https://example.com/1", "image": None, "source": "NewsAPI (Demo)", "publishedAt": "2024-01-15T10:00:00Z"},
+            {"title": f"Sample: {topic} News 2", "content": f"Demo content for {topic} article 2", "url": "https://example.com/2", "image": None, "source": "NewsAPI (Demo)", "publishedAt": "2024-01-15T09:00:00Z"},
         ]
     url = "https://newsapi.org/v2/everything"
     to_dt = to_date or datetime.now().date()
@@ -159,14 +145,7 @@ def fetch_newsapi(topic: str, num_articles: int, from_date: date | None, to_date
     r.raise_for_status()
     data = r.json()
     return [
-        {
-            "title": a.get("title"),
-            "content": a.get("description") or a.get("content"),
-            "url": a.get("url"),
-            "image": a.get("urlToImage"),
-            "source": a.get("source", {}).get("name") or "NewsAPI",
-            "publishedAt": a.get("publishedAt"),
-        }
+        {"title": a.get("title"), "content": a.get("description") or a.get("content"), "url": a.get("url"), "image": a.get("urlToImage"), "source": a.get("source", {}).get("name") or "NewsAPI", "publishedAt": a.get("publishedAt")}
         for a in data.get("articles", [])
     ]
 
@@ -179,14 +158,7 @@ def fetch_google_news(query: str, num_results: int) -> List[Dict]:
     search = GoogleSearch(params)
     results = search.get_dict()
     return [
-        {
-            "title": a.get("title"),
-            "content": a.get("snippet"),
-            "url": a.get("link"),
-            "image": a.get("thumbnail"),
-            "source": a.get("source") or hostname(a.get("link")),
-            "publishedAt": a.get("date"),
-        }
+        {"title": a.get("title"), "content": a.get("snippet"), "url": a.get("link"), "image": a.get("thumbnail"), "source": a.get("source") or hostname(a.get("link")), "publishedAt": a.get("date")}
         for a in results.get("news_results", [])[:num_results]
     ]
 
@@ -201,7 +173,6 @@ def combine_and_dedupe(articles_lists: List[List[Dict]], max_items: int) -> List
                 continue
             seen.add(key)
             combined.append(a)
-    # Sort by published date desc when possible
     def sort_key(a: Dict):
         ts = a.get("publishedAt") or ""
         try:
@@ -240,44 +211,31 @@ with st.sidebar:
     with col_s2:
         temperature = st.slider("Creativity", 0.0, 1.0, 0.2, 0.1)
 
-    sources = st.multiselect(
-        "Sources",
-        options=["NewsAPI", "Google News (SerpAPI)"],
-        default=["NewsAPI"],
-    )
+    sources = st.multiselect("Sources", options=["NewsAPI", "Google News (SerpAPI)"], default=["Google News (SerpAPI)"])
 
     today = datetime.now().date()
-    date_range = st.date_input(
-        "Date range (NewsAPI only)",
-        value=(today - timedelta(days=7), today),
-        max_value=today,
-    )
+    date_range = st.date_input("Date range (NewsAPI only)", value=(today - timedelta(days=7), today), max_value=today)
     from_date, to_date = None, None
     if isinstance(date_range, tuple) and len(date_range) == 2:
         from_date, to_date = date_range
 
     summary_styles = {
-    "Simple": "Explain in very simple, easy-to-read sentences (like for a school student).",
-    "Professional": "Write in a formal, concise, business-professional tone.",
-    "Technical": "Include technical details, terminology, and precise data if available.",
-    "Detailed": "Write a detailed summary in 3–5 paragraphs.",
-    "Bulleted": "Summarize only in 6–8 bullet points with facts."
+        "Simple": "Explain in very simple, easy-to-read sentences (like for a school student).",
+        "Professional": "Write in a formal, concise, business-professional tone.",
+        "Technical": "Include technical details, terminology, and precise data if available.",
+        "Detailed": "Write a detailed summary in 3–5 paragraphs.",
+        "Bulleted": "Summarize only in 6–8 bullet points with facts."
     }
 
     style_choice = st.selectbox("Summary Style", list(summary_styles.keys()))
-
     sort_by = st.selectbox("Sort by", ["Newest", "Oldest", "Source"], index=0)
     use_ai = st.toggle("Use AI Summaries", value=True, help="Disable to see raw descriptions only")
     show_images = st.toggle("Show images", value=True)
-
-
 
     st.subheader("Recent Searches")
     for past in st.session_state.history[-8:][::-1]:
         if st.button(past, key=f"hist-{past}"):
             topic = past
-    
-
 
 # Tabs
 summaries_tab, download_tab, insights_tab, history_tab = st.tabs([
@@ -312,76 +270,64 @@ with summaries_tab:
 
         st.session_state.history.append(topic)
         st.session_state.last_topic = topic
+        st.session_state.articles_data = []
 
-        # Summarize
-        processed = []
+        article_placeholder = st.empty()
         progress = st.progress(0)
-        for i, art in enumerate(articles):
+
+        # Async summarization
+        def process_article(i, art):
             text = art.get("content") or ""
             if use_ai and text:
-                summary, key_points = summarize_article_content(text, art.get("title", ""), temperature=temperature)
+                summary, key_points = summarize_article_content(text, art.get("title", ""), style_choice=style_choice, temperature=temperature)
             else:
-                summary = text or "No summary available."
-                key_points = ""
-            processed.append({**art, "summary": summary, "key_points": key_points})
-            progress.progress(int((i + 1) / len(articles) * 100))
-        st.session_state.articles_data = processed
+                summary, key_points = text or "No summary available.", ""
+            return {**art, "summary": summary, "key_points": key_points, "index": i}
 
-        # Display
-        sort_key_fn = None
-        if sort_by == "Newest":
-            sort_key_fn = lambda a: a.get("publishedAt") or ""
-            processed = sorted(processed, key=lambda a: (a.get("publishedAt") or ""), reverse=True)
-        elif sort_by == "Oldest":
-            processed = sorted(processed, key=lambda a: (a.get("publishedAt") or ""))
-        else:  # Source
-            processed = sorted(processed, key=lambda a: a.get("source") or "")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_index = {executor.submit(process_article, i, art): i for i, art in enumerate(articles)}
+            for future in concurrent.futures.as_completed(future_to_index):
+                i = future_to_index[future]
+                result = future.result()
+                st.session_state.articles_data.append(result)
 
-        for i, a in enumerate(processed):
-            with st.container():
-                st.markdown("---")  # separator
+                # Update display for all processed articles so far
+                with article_placeholder.container():
+                    for a in sorted(st.session_state.articles_data, key=lambda x: x["index"]):
+                        st.markdown("---")
+                        col1, col2 = st.columns([1, 3], vertical_alignment="top")
+                        with col1:
+                            if show_images and a.get("image"):
+                                st.image(a["image"], use_container_width=True)
+                        with col2:
+                            st.markdown(f"### {a['index']+1}. {a.get('title') or 'Untitled'}")
+                            st.caption(f"📰 {a.get('source') or hostname(a.get('url'))} • {parse_date_safe(a.get('publishedAt'))}")
+                            st.markdown("### 🔎 AI Summary" if use_ai else "### 📝 Description")
+                            st.write(a["summary"])
+                            if a.get("key_points"):
+                                st.markdown("### ✅ Key Points")
+                                st.markdown(a["key_points"])
+                            col_a, col_b = st.columns([0.3, 0.7])
+                            with col_a:
+                                if st.link_button("Open Article", a.get("url") or "#", use_container_width=True):
+                                    pass
+                            with col_b:
 
-                # Create two-column layout
-                col1, col2 = st.columns([1, 3], vertical_alignment="top")
+                                # Inside the loop where deep dive button is created
+                                deep_key = f"deep_{a['index']}_{hash(a.get('url',''))}_{uuid.uuid4()}"
+                                if st.button(f"🔎 Deep Dive {a['index']+1}", key=deep_key):
+                                    long_prompt = (
+                                        f"Write a detailed 5-paragraph analysis of this article. "
+                                        f"Include context, implications, and examples.\n\n{a['content']}"
+                                    )
+                                    long_summary = summarize_with_gemini(long_prompt, max_output_tokens=1000)
+                                    st.markdown("### 📖 Deep Dive")
+                                    st.write(long_summary)
 
-                # Left column = image
-                with col1:
-                    if show_images and a.get("image"):
-                        st.image(a["image"], use_container_width=True)
+                progress.progress(int(len(st.session_state.articles_data)/len(articles)*100))
+                time.sleep(0.05)  # small delay for smooth UX
 
-                # Right column = content
-                with col2:
-                    st.markdown(f"### {i+1}. {a.get('title') or 'Untitled'}")
-                    st.caption(f"📰 {a.get('source') or hostname(a.get('url'))} • {parse_date_safe(a.get('publishedAt'))}")
-
-                    st.markdown("### 🔎 AI Summary" if use_ai else "### 📝 Description")
-                    st.write(a["summary"])
-
-                    if a.get("key_points"):
-                        st.markdown("### ✅ Key Points")
-                        st.markdown(a["key_points"])
-
-                    # Action buttons
-                    col_a, col_b = st.columns([0.3, 0.7])
-                    with col_a:
-                        if st.link_button("Open Article", a.get("url") or "#", use_container_width=True):
-                            pass
-                    with col_b:
-                        if st.button(f"🔎 Deep Dive {i+1}", key=f"deep{i}"):
-                            long_prompt = (
-                                f"Write a detailed 5-paragraph analysis of this article. "
-                                f"Include context, implications, and examples.\n\n{a['content']}"
-                            )
-                            long_summary = summarize_with_gemini(long_prompt, max_output_tokens=1000)
-                            st.markdown("### 📖 Deep Dive")
-                            st.write(long_summary)
-
-
-    # Empty state display
-    if not st.session_state.get("articles_data"):
-        st.info("Use the controls on the left, then click 'Fetch & Summarize'.")
-
-# Downloads
+# -------------------- Downloads --------------------
 with download_tab:
     if st.session_state.get("articles_data"):
         df = pd.DataFrame(st.session_state.articles_data)
@@ -406,7 +352,7 @@ with download_tab:
     else:
         st.info("Run a search first.")
 
-# Insights
+# -------------------- Insights --------------------
 with insights_tab:
     data = st.session_state.get("articles_data")
     if data:
@@ -417,7 +363,6 @@ with insights_tab:
         st.dataframe(src_counts, use_container_width=True)
 
         st.subheader("Timeline (PublishedAt)")
-        # Normalize dates for chart
         df["_date"] = pd.to_datetime(df["publishedAt"], errors="coerce").dt.date
         st.bar_chart(df["_date"].value_counts().sort_index())
 
@@ -427,7 +372,7 @@ with insights_tab:
     else:
         st.info("Run a search first.")
 
-# History
+# -------------------- History --------------------
 with history_tab:
     if st.session_state.history:
         st.write("Your last searches:")
