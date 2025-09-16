@@ -1,5 +1,7 @@
 # Architecture Diagram: News Summarizer AI Agent
 
+
+
 ```
 +-------------------+         +-------------------+         +-------------------+
 |                   |         |                   |         |                   |
@@ -20,12 +22,11 @@
                               |   Insights,       |
                               |   Downloads       |
                               +-------------------+
+
 ```
 
-**Legend**  
-- Blue boxes = Core components  
-- Green boxes = External APIs  
-- Orange box = Output to user
+### Architecture Diagram
+![Architecture](architecture.png)
 
 
 **Flow:**
