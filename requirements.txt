@@ -6,3 +6,5 @@ pandas
 # optional
 newspaper3k
 google-search-results   # for SerpAPI
+lxml[html_clean]
+lxml_html_clean
