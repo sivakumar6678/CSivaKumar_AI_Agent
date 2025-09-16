@@ -5,70 +5,31 @@ import requests
 from typing import List, Dict
 import streamlit as st
 import pandas as pd
-import google.generativeai as genai
 from dotenv import load_dotenv
+import google.generativeai as genai
+from serpapi import GoogleSearch
+from datetime import datetime, timedelta
 
-# Optional: for better article text extraction (install newspaper3k)
-# from newspaper import Article
-
+# Load env vars
 load_dotenv()
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
-### ---------- Helpers ----------
-@st.cache_data(ttl=300)
-def fetch_news(topic: str, num_articles: int = 5, language: str = "en", use_top_headlines: bool=False) -> List[Dict]:
-    """Fetch news articles from NewsAPI."""
-    base = "https://newsapi.org/v2/top-headlines" if use_top_headlines else "https://newsapi.org/v2/everything"
-    params = {
-        "q": topic,
-        "pageSize": num_articles,
-        "language": language,
-        "sortBy": "publishedAt",
-        "apiKey": NEWSAPI_KEY
-    }
-    res = requests.get(base, params=params, timeout=10)
-    res.raise_for_status()
-    data = res.json()
-    articles = data.get("articles", [])
-    # Normalize fields
-    results = []
-    for a in articles:
-        results.append({
-            "title": a.get("title"),
-            "description": a.get("description"),
-            "content": a.get("content"),   # often truncated
-            "url": a.get("url"),
-            "source": a.get("source", {}).get("name"),
-            "publishedAt": a.get("publishedAt")
-        })
-    return results
+MODEL_NAME = "gemini-2.0-flash"
 
-def extract_full_text_with_newspaper(url: str) -> str:
-    """Optional: use newspaper3k to extract full article text. Use only if installed."""
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+# ---------- Summarizer ----------
+def summarize_with_gemini(prompt: str, max_output_tokens: int = 400) -> str:
+    if not GEMINI_API_KEY:
+        return f"""**Demo Summary:**  
+• This is a mock summary showing how the News Summarizer works  
+• Recent reports indicate trends and updates on this topic  
+• Configure your Gemini API key for real-time AI summaries"""
     try:
-        art = Article(url)
-        art.download()
-        art.parse()
-        return art.text
-    except Exception as e:
-        return ""
-
-def chunk_text(text: str, max_chars: int = 3000) -> List[str]:
-    """Simple char-based chunker to avoid token limits."""
-    if not text:
-        return []
-    chunks = []
-    start = 0
-    while start < len(text):
-        chunks.append(text[start:start+max_chars])
-        start += max_chars
-    return chunks
-
-def summarize_with_gemini(prompt: str, model: str = "gemini-2.5-flash", max_output_tokens: int = 512) -> str:
-    try:
-        model = genai.GenerativeModel(model)
+        model = genai.GenerativeModel(MODEL_NAME)
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
@@ -78,101 +39,165 @@ def summarize_with_gemini(prompt: str, model: str = "gemini-2.5-flash", max_outp
         )
         return response.text.strip()
     except Exception as e:
-        return f"[Error summarizing: {e}]"
+        return f"[Gemini Error: {e}]"
 
-def summarize_article_content(content: str, title: str = "", model: str = "gemini-2.5-flash") -> str:
+def chunk_text(text: str, max_chars: int = 3000) -> List[str]:
+    if not text:
+        return []
+    return [text[i:i+max_chars] for i in range(0, len(text), max_chars)]
+
+def summarize_article_content(content: str, title: str = "") -> str:
     if not content:
-        return "No article text available to summarize."
+        return "No article text available."
     chunks = chunk_text(content, max_chars=3000)
     summaries = []
     for i, c in enumerate(chunks):
-        prompt = f"Summarize the following news text (chunk {i+1}/{len(chunks)}) in 2-3 short sentences, include the key facts and why it matters:\n\n{c}"
-        s = summarize_with_gemini(prompt, model=model, max_output_tokens=220)
+        prompt = f"Summarize this article (chunk {i+1}/{len(chunks)}) in 2–3 sentences:\n\n{c}"
+        s = summarize_with_gemini(prompt, max_output_tokens=220)
         summaries.append(s)
+        time.sleep(0.2)
     if len(summaries) == 1:
         return summaries[0]
-    combined_prompt = "Combine the following chunk summaries into a coherent 2–3 sentence news summary, removing repetition:\n\n" + "\n\n".join(summaries)
-    final = summarize_with_gemini(combined_prompt, model=model, max_output_tokens=220)
-    return final
+    combined_prompt = "Combine these into one concise 2–3 sentence summary:\n\n" + "\n\n".join(summaries)
+    return summarize_with_gemini(combined_prompt, max_output_tokens=220)
 
+# ---------- Fetch News ----------
+@st.cache_data(ttl=300)
+def fetch_newsapi(topic: str, num_articles: int = 5) -> List[Dict]:
+    if not NEWSAPI_KEY:
+        # Demo articles if no key
+        return [
+            {"title": f"Sample: {topic} News 1", "content": f"Demo content for {topic} article 1", 
+             "url": "https://example.com/1", "image": None, "source": "DemoSource", "publishedAt": "2024-01-15"},
+            {"title": f"Sample: {topic} News 2", "content": f"Demo content for {topic} article 2", 
+             "url": "https://example.com/2", "image": None, "source": "DemoSource", "publishedAt": "2024-01-15"},
+        ]
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=7)
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": topic,
+        "apiKey": NEWSAPI_KEY,
+        "sortBy": "publishedAt",
+        "language": "en",
+        "pageSize": num_articles,
+        "from": from_date.strftime("%Y-%m-%d"),
+        "to": to_date.strftime("%Y-%m-%d")
+    }
+    r = requests.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    return [
+        {
+            "title": a.get("title"),
+            "content": a.get("description") or a.get("content"),
+            "url": a.get("url"),
+            "image": a.get("urlToImage"),
+            "source": a.get("source", {}).get("name"),
+            "publishedAt": a.get("publishedAt"),
+        }
+        for a in data.get("articles", [])
+    ]
 
-@st.cache_data(ttl=600)
-def generate_summaries_for_articles(articles: List[Dict], model: str="gpt-3.5-turbo") -> List[Dict]:
-    """Generate short summaries for list of articles. Uses available description/content."""
+@st.cache_data(ttl=300)
+def fetch_google_news(query: str, num_results: int = 5) -> List[Dict]:
+    if not SERPAPI_KEY:
+        return []
+    params = {"q": query, "tbm": "nws", "num": num_results, "api_key": SERPAPI_KEY}
+    search = GoogleSearch(params)
+    results = search.get_dict()
+    return [
+        {
+            "title": a.get("title"),
+            "content": a.get("snippet"),
+            "url": a.get("link"),
+            "image": a.get("thumbnail"),
+            "source": a.get("source"),
+            "publishedAt": a.get("date"),
+        }
+        for a in results.get("news_results", [])[:num_results]
+    ]
+
+def generate_summaries(articles: List[Dict]) -> List[Dict]:
     out = []
     for art in articles:
-        text = art.get("content") or art.get("description") or ""
-        # Optionally try to fetch full text:
-        # full = extract_full_text_with_newspaper(art['url'])
-        # if full:
-        #     text = full
-        summary = summarize_article_content(text, title=art.get("title", ""), model=model) if text else "No text available to summarize."
+        text = art.get("content") or ""
+        summary = summarize_article_content(text, art.get("title", "")) if text else "No summary available."
         out.append({**art, "summary": summary})
     return out
 
-### ---------- Streamlit UI ----------
-st.set_page_config(page_title="News Summarizer", layout="wide")
-st.title("📰 News Summarizer — quick daily digest")
-st.write("Enter a topic or choose a category, then click *Fetch & Summarize*.")
+# ---------- Streamlit UI ----------
+st.set_page_config(page_title="News Summarizer Agent", page_icon="📰", layout="wide")
+st.title("📰 News Summarizer Agent")
+st.caption("Get AI-powered summaries of the latest news (Gemini 2.0 Flash)")
 
-# Sidebar controls
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "summary_result" not in st.session_state:
+    st.session_state.summary_result = None
+if "articles_data" not in st.session_state:
+    st.session_state.articles_data = None
+
 with st.sidebar:
-    st.header("Options")
-    topic = st.text_input("Search topic (leave blank for top news)", value="AI")
-    categories = ["General", "Technology", "Business", "Sports", "Health", "Science", "Entertainment"]
-    category = st.selectbox("Or choose a category", categories, index=1)
-    num_articles = st.slider("Number of articles", 1, 10, 5)
-    model_choice = st.selectbox("Model (for demo use gpt-3.5-turbo)", ["gpt-3.5-turbo", "gpt-4"], index=0)
-    use_top_headlines = st.checkbox("Use top headlines endpoint (category-based)", value=False)
-    if use_top_headlines:
-        topic_to_search = category if category != "General" else ""
-    else:
-        topic_to_search = topic
+    st.header("⚙️ Options")
+    topic = st.text_input("Enter topic", value="AI in healthcare")
+    num_articles = st.slider("Articles", 1, 10, 5)
+    source_choice = st.radio("Source", ["NewsAPI", "Google News (SerpAPI)"])
+    if st.button("Daily Digest (Top 5 Headlines)"):
+        topic = "Top News"
+        num_articles = 5
+    st.subheader("Recent Searches")
+    for past in st.session_state.history[-5:][::-1]:
+        if st.button(past, key=past):
+            topic = past
 
-# Fetch button
-if st.button("Fetch & Summarize"):
-    if not NEWSAPI_KEY:
-        st.error("Set your NEWSAPI_KEY environment variable first.")
-    elif not GEMINI_API_KEY:
-        st.error("Set your GEMINI_API_KEY environment variable first.")
-    else:
-        with st.spinner("Fetching articles..."):
+tab1, tab2, tab3 = st.tabs(["📑 Summaries", "⬇️ Download", "🕒 History"])
+
+with tab1:
+    if st.button("🔍 Fetch & Summarize", type="primary", use_container_width=True):
+        with st.spinner(f"Fetching {num_articles} articles from {source_choice}..."):
             try:
-                articles = fetch_news(topic_to_search or "", num_articles=num_articles, use_top_headlines=use_top_headlines)
+                if source_choice == "NewsAPI":
+                    articles = fetch_newsapi(topic, num_articles)
+                else:
+                    articles = fetch_google_news(topic, num_articles)
             except Exception as e:
-                st.error(f"Error fetching news: {e}")
+                st.error(f"❌ Error fetching news: {e}")
                 st.stop()
+
         if not articles:
-            st.warning("No articles found for that topic.")
+            st.warning("No articles found.")
             st.stop()
 
-        st.success(f"Fetched {len(articles)} articles. Generating summaries...")
-        summaries = generate_summaries_for_articles(articles, model=model_choice)
+        st.session_state.history.append(topic)
+        summaries = generate_summaries(articles)
+        st.session_state.articles_data = summaries
 
-        # Show in columns / cards
         for i, a in enumerate(summaries):
-            st.markdown("---")
-            title_line = f"**{i+1}. {a.get('title','(No Title)')}**  \nSource: {a.get('source')} • {a.get('publishedAt')}"
-            st.write(title_line)
-            st.write(a.get("summary"))
-            st.write(f"[Read original article →]({a.get('url')})")
-            # Deep dive button
-            if st.button(f"Deep Dive: longer summary ({i+1})", key=f"deep_{i}"):
-                full_text = a.get("content") or a.get("description") or ""
-                # try to fetch full article - optional heavy
-                # full_text_new = extract_full_text_with_newspaper(a['url'])
-                # if full_text_new:
-                #     full_text = full_text_new
-                if not full_text:
-                    st.info("No full text available for a deeper summary.")
-                else:
-                    with st.spinner("Generating deep-dive summary..."):
-                        long_prompt = f"Write a 3-paragraph detailed news summary and context (background, implications) for the following article:\n\n{full_text}"
-                        long_summary = summarize_with_gemini(long_prompt, model=model_choice, max_tokens=600)
-                        st.markdown(long_summary)
+            with st.expander(f"{i+1}. {a['title']}"):
+                if a.get("image"):
+                    st.image(a["image"], use_container_width=True)
+                st.caption(f"📰 {a['source']} • {a['publishedAt']}")
+                
+                st.markdown("### 🔎 AI Summary")
+                st.write(a["summary"])
+                
+                st.markdown(f"[Read full →]({a['url']})")
 
-        # Download option (CSV)
-        df = pd.DataFrame([{"title": a["title"], "source": a["source"], "publishedAt": a["publishedAt"], "summary": a["summary"], "url": a["url"]} for a in summaries])
+
+with tab2:
+    if st.session_state.articles_data:
+        st.write("Download last summaries as CSV:")
+        df = pd.DataFrame(st.session_state.articles_data)
         csv = df.to_csv(index=False)
-        st.download_button("Download digest (CSV)", csv, file_name="news_digest.csv", mime="text/csv")
-        st.success("Done! Scroll up to read the digest.")
+        st.download_button("📥 Download CSV", csv, "news_digest.csv", "text/csv")
+    else:
+        st.info("Run a search first.")
+
+with tab3:
+    if st.session_state.history:
+        st.write("Your last searches:")
+        for past in st.session_state.history[::-1]:
+            st.write(f"- {past}")
+    else:
+        st.info("No history yet.")

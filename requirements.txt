@@ -5,3 +5,4 @@ python-dotenv
 pandas
 # optional
 newspaper3k
+google-search-results   # for SerpAPI
