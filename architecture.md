@@ -22,6 +22,12 @@
                               +-------------------+
 ```
 
+**Legend**  
+- Blue boxes = Core components  
+- Green boxes = External APIs  
+- Orange box = Output to user
+
+
 **Flow:**
 - User interacts with Streamlit UI (topic, style, etc.)
 - App fetches news from NewsAPI and/or Google News (SerpAPI)
