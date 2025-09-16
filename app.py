@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, date
 from urllib.parse import urlparse
 import concurrent.futures
 import uuid
+from newspaper import Article
 
 
 # -------------------- Load env vars & Model --------------------
@@ -55,6 +56,22 @@ def hostname(u: str | None) -> str:
         return urlparse(u).hostname or "Unknown"
     except Exception:
         return "Unknown"
+
+
+def get_high_res_image(url: str | None) -> str | None:
+    """
+    Attempts to fetch the top image from the article page using newspaper3k.
+    Returns None if it fails.
+    """
+    if not url:
+        return None
+    try:
+        art = Article(url)
+        art.download()
+        art.parse()
+        return art.top_image or None
+    except Exception:
+        return None
 
 
 # -------------------- Summarization --------------------
@@ -144,10 +161,20 @@ def fetch_newsapi(topic: str, num_articles: int, from_date: date | None, to_date
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
-    return [
-        {"title": a.get("title"), "content": a.get("description") or a.get("content"), "url": a.get("url"), "image": a.get("urlToImage"), "source": a.get("source", {}).get("name") or "NewsAPI", "publishedAt": a.get("publishedAt")}
-        for a in data.get("articles", [])
-    ]
+    articles = []
+    for a in data.get("articles", []):
+        img = a.get("urlToImage")
+        # Try fetching high-res image if possible
+        high_res = get_high_res_image(a.get("url")) or img
+        articles.append({
+            "title": a.get("title"),
+            "content": a.get("description") or a.get("content"),
+            "url": a.get("url"),
+            "image": high_res,
+            "source": a.get("source", {}).get("name") or "NewsAPI",
+            "publishedAt": a.get("publishedAt"),
+        })
+    return articles
 
 
 @st.cache_data(ttl=300)
@@ -157,10 +184,21 @@ def fetch_google_news(query: str, num_results: int) -> List[Dict]:
     params = {"q": query, "tbm": "nws", "num": num_results, "api_key": SERPAPI_KEY}
     search = GoogleSearch(params)
     results = search.get_dict()
-    return [
-        {"title": a.get("title"), "content": a.get("snippet"), "url": a.get("link"), "image": a.get("thumbnail"), "source": a.get("source") or hostname(a.get("link")), "publishedAt": a.get("date")}
-        for a in results.get("news_results", [])[:num_results]
-    ]
+    articles = []
+    for a in results.get("news_results", [])[:num_results]:
+        img = a.get("image") or a.get("thumbnail")  # prefer image over thumbnail
+        # Optional: try fetch from top_image
+        high_res = get_high_res_image(a.get("link")) or img
+        articles.append({
+            "title": a.get("title"),
+            "content": a.get("snippet"),
+            "url": a.get("link"),
+            "image": high_res,
+            "source": a.get("source") or hostname(a.get("link")),
+            "publishedAt": a.get("date"),
+        })
+    return articles
+
 
 
 def combine_and_dedupe(articles_lists: List[List[Dict]], max_items: int) -> List[Dict]:
@@ -247,7 +285,7 @@ summaries_tab, download_tab, insights_tab, history_tab = st.tabs([
 
 # Fetch and summarize flow
 with summaries_tab:
-    if st.button("🔍 Fetch & Summarize", type="primary", use_container_width=True):
+    if st.button("🔍 Get News", type="primary", use_container_width=True):
         if not sources:
             st.warning("Select at least one source.")
             st.stop()
