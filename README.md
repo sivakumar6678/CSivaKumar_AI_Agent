@@ -1,10 +1,16 @@
 ## News Summarizer AI Agent
 
+Choose a topic, date range, and summary style to create a news digest. The app
+collects articles from NewsAPI and Google News via SerpAPI, removes duplicates,
+and uses Gemini to generate summaries and key points. Results can be downloaded
+as CSV or Markdown.
+
+**Stack:** Python · Streamlit · Gemini API · pandas
+
 ### Demo
 - [Live Demo on Streamlit](https://sivakumar6678-csivakumar-ai-agent-app-3reonz.streamlit.app/)
 
 ---
-A Streamlit app that collects news from multiple sources, removes duplicate articles, and uses Gemini to create downloadable news digests.
 
 ### What does this agent do?
 This AI agent fetches the latest news articles from multiple sources (NewsAPI, Google News via SerpAPI), deduplicates them, and uses Google Gemini (Generative AI) to generate concise summaries and key points for each article. Users can customize the topic, date range, summary style, and more. The agent presents the results in a modern Streamlit web app, with options to download the digest and view insights.
